@@ -1,0 +1,493 @@
+// QuickDesk - prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────── Enums ─────────────────────────
+
+enum Role {
+  REQUESTER
+  AGENT
+  TEAM_LEAD
+  ADMIN
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_ON_CUSTOMER
+  RESOLVED
+  CLOSED
+  CANCELLED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketSource {
+  WEB
+  EMAIL
+}
+
+enum MessageType {
+  PUBLIC_REPLY
+  INTERNAL_NOTE
+}
+
+enum TicketEventType {
+  CREATED
+  STATUS_CHANGED
+  PRIORITY_CHANGED
+  ASSIGNEE_CHANGED
+  TEAM_CHANGED
+  CATEGORY_CHANGED
+  TAG_ADDED
+  TAG_REMOVED
+  MERGED
+  ESCALATED
+}
+
+enum AutomationTrigger {
+  TICKET_CREATED
+  TICKET_UPDATED
+  TIME_ELAPSED
+}
+
+enum KbArticleStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum NotificationType {
+  TICKET_CREATED
+  PUBLIC_REPLY
+  ASSIGNED
+  STATUS_RESOLVED
+  SLA_WARNING
+  SLA_BREACH
+  ESCALATION
+}
+
+// ───────────────────────── Auth & users ─────────────────────────
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  phone        String?
+  company      String?
+  jobTitle     String?
+  role         Role      @default(REQUESTER)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  sessions               Session[]
+  passwordResetTokens    PasswordResetToken[]
+  teamMemberships        TeamMember[]
+  requestedTickets       Ticket[]                @relation("TicketRequester")
+  assignedTickets        Ticket[]                @relation("TicketAssignee")
+  messages               TicketMessage[]
+  attachments            Attachment[]
+  ticketEvents           TicketEvent[]
+  cannedResponses        CannedResponse[]
+  kbArticles             KbArticle[]
+  notifications          Notification[]
+  notificationPreference NotificationPreference?
+  auditLogs              AuditLog[]
+
+  @@index([role])
+  @@index([deletedAt])
+}
+
+// Cookie holds a random token; only its SHA-256 hash is stored.
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ip        String?
+  userAgent String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// Fixed-window rate limiting in Postgres (login, register, ticket create).
+model RateLimit {
+  key         String   @id
+  count       Int      @default(0)
+  windowStart DateTime @default(now())
+}
+
+// ───────────────────────── Teams ─────────────────────────
+
+model Team {
+  id                 String    @id @default(cuid())
+  name               String    @unique
+  description        String?
+  // Round-robin cursor: last member who received an auto-assigned ticket.
+  lastAssignedUserId String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  deletedAt          DateTime?
+
+  members    TeamMember[]
+  tickets    Ticket[]
+  categories Category[]
+}
+
+model TeamMember {
+  teamId    String
+  userId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([teamId, userId])
+  @@index([userId])
+}
+
+// ───────────────────────── Tickets ─────────────────────────
+
+// Single-row counters, incremented inside the create-ticket transaction
+// to produce QD-000123 style numbers.
+model Counter {
+  name  String @id
+  value Int    @default(0)
+}
+
+model Ticket {
+  id           String         @id @default(cuid())
+  ticketNumber String         @unique
+  subject      String
+  description  String
+  status       TicketStatus   @default(OPEN)
+  priority     TicketPriority @default(MEDIUM)
+  source       TicketSource   @default(WEB)
+
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  requesterId String
+  requester   User      @relation("TicketRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+  assigneeId  String?
+  assignee    User?     @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  teamId      String?
+  team        Team?     @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  firstResponseDueAt DateTime?
+  resolutionDueAt    DateTime?
+  firstRespondedAt   DateTime?
+  resolvedAt         DateTime?
+  closedAt           DateTime?
+  reopenCount        Int       @default(0)
+
+  // SLA pause: set on entering WAITING_ON_CUSTOMER; on leaving, both due
+  // dates are shifted forward by (now - slaPausedAt) and this is cleared.
+  slaPausedAt     DateTime?
+  // 0 = none, 1 = team lead notified, 2 = admins notified
+  escalationLevel Int       @default(0)
+  escalatedAt     DateTime?
+
+  mergedIntoId String?
+  mergedInto   Ticket?  @relation("TicketMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom   Ticket[] @relation("TicketMerge")
+  followUpOfId String?
+  followUpOf   Ticket?  @relation("TicketFollowUp", fields: [followUpOfId], references: [id], onDelete: SetNull)
+  followUps    Ticket[] @relation("TicketFollowUp")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  messages      TicketMessage[]
+  attachments   Attachment[]
+  tags          TicketTag[]
+  events        TicketEvent[]
+  csatRatings   CsatRating[]
+  notifications Notification[]
+
+  @@index([requesterId, deletedAt])
+  @@index([assigneeId, status])
+  @@index([teamId, status])
+  @@index([status, priority])
+  @@index([categoryId])
+  @@index([resolutionDueAt])
+  @@index([firstResponseDueAt])
+  @@index([updatedAt])
+  @@index([createdAt])
+  @@index([deletedAt])
+}
+
+model TicketMessage {
+  id        String      @id @default(cuid())
+  ticketId  String
+  ticket    Ticket      @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  authorId  String
+  author    User        @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  type      MessageType @default(PUBLIC_REPLY)
+  body      String
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  attachments Attachment[]
+
+  @@index([ticketId, type, createdAt])
+  @@index([authorId])
+}
+
+// messageId null = attached to the ticket description itself.
+model Attachment {
+  id         String         @id @default(cuid())
+  ticketId   String
+  ticket     Ticket         @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  messageId  String?
+  message    TicketMessage? @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  uploaderId String
+  uploader   User           @relation(fields: [uploaderId], references: [id], onDelete: Restrict)
+  fileName   String
+  mimeType   String
+  sizeBytes  Int
+  storageKey String         @unique
+  createdAt  DateTime       @default(now())
+
+  @@index([ticketId])
+  @@index([messageId])
+}
+
+// Activity timeline. actorId null = system (automation, scheduled job).
+model TicketEvent {
+  id        String          @id @default(cuid())
+  ticketId  String
+  ticket    Ticket          @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  actorId   String?
+  actor     User?           @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  type      TicketEventType
+  fromValue String?
+  toValue   String?
+  createdAt DateTime        @default(now())
+
+  @@index([ticketId, createdAt])
+}
+
+model Category {
+  id            String    @id @default(cuid())
+  name          String    @unique
+  description   String?
+  // New tickets in this category are routed to this team.
+  defaultTeamId String?
+  defaultTeam   Team?     @relation(fields: [defaultTeamId], references: [id], onDelete: SetNull)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  tickets Ticket[]
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  color     String   @default("gray")
+  createdAt DateTime @default(now())
+
+  tickets TicketTag[]
+}
+
+model TicketTag {
+  ticketId  String
+  tagId     String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  tag       Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([ticketId, tagId])
+  @@index([tagId])
+}
+
+// ───────────────────────── SLA & automation ─────────────────────────
+
+model SlaPolicy {
+  id                   String         @id @default(cuid())
+  name                 String
+  priority             TicketPriority @unique
+  firstResponseMinutes Int
+  resolutionMinutes    Int
+  isActive             Boolean        @default(true)
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+}
+
+// conditions / actions are JSON arrays validated by Zod on write and on run.
+model AutomationRule {
+  id             String            @id @default(cuid())
+  name           String
+  trigger        AutomationTrigger
+  // Only used when trigger = TIME_ELAPSED
+  elapsedMinutes Int?
+  conditions     Json
+  actions        Json
+  position       Int               @default(0)
+  isEnabled      Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([trigger, isEnabled, position])
+}
+
+model CannedResponse {
+  id          String   @id @default(cuid())
+  title       String
+  body        String
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive])
+}
+
+// ───────────────────────── Knowledge base ─────────────────────────
+
+model KbCategory {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  position    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  articles KbArticle[]
+}
+
+model KbArticle {
+  id              String          @id @default(cuid())
+  title           String
+  slug            String          @unique
+  excerpt         String?
+  // Sanitized HTML from the rich text editor
+  content         String
+  status          KbArticleStatus @default(DRAFT)
+  categoryId      String
+  category        KbCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  authorId        String
+  author          User            @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  helpfulCount    Int             @default(0)
+  notHelpfulCount Int             @default(0)
+  publishedAt     DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  votes KbArticleVote[]
+
+  @@index([status, categoryId])
+}
+
+// voterKey = user id, or a hashed anonymous cookie for logged-out readers.
+model KbArticleVote {
+  id        String    @id @default(cuid())
+  articleId String
+  article   KbArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  voterKey  String
+  helpful   Boolean
+  createdAt DateTime  @default(now())
+
+  @@unique([articleId, voterKey])
+}
+
+// ───────────────────────── CSAT ─────────────────────────
+
+// One row per resolution. resolutionSeq = ticket.reopenCount at resolve time.
+// rating stays null until the tokenized link is used.
+model CsatRating {
+  id            String    @id @default(cuid())
+  ticketId      String
+  ticket        Ticket    @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  resolutionSeq Int
+  tokenHash     String    @unique
+  rating        Int?
+  comment       String?
+  expiresAt     DateTime
+  submittedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@unique([ticketId, resolutionSeq])
+}
+
+// ───────────────────────── Notifications ─────────────────────────
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String?
+  ticketId  String?
+  ticket    Ticket?          @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, readAt, createdAt])
+}
+
+model NotificationPreference {
+  userId             String   @id
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailTicketCreated Boolean  @default(true)
+  emailPublicReply   Boolean  @default(true)
+  emailAssigned      Boolean  @default(true)
+  emailResolved      Boolean  @default(true)
+  emailSlaWarning    Boolean  @default(true)
+  updatedAt          DateTime @updatedAt
+}
+
+// ───────────────────────── Audit ─────────────────────────
+
+// Append-only: the app never updates or deletes rows here.
+// actorId null = system.
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+}
