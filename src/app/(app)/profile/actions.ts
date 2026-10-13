@@ -88,3 +88,39 @@ export async function changePasswordAction(
 
   return { success: "Password changed. Other devices have been signed out." };
 }
+
+const PREFERENCE_KEYS = [
+  "emailTicketCreated",
+  "emailPublicReply",
+  "emailAssigned",
+  "emailResolved",
+  "emailSlaWarning",
+] as const;
+
+/** Saves the signed-in user's own email preferences. Unchecked boxes are off. */
+export async function updateNotificationPrefsAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const user = await requireUser();
+
+  const values = Object.fromEntries(
+    PREFERENCE_KEYS.map((key) => [key, formData.get(key) === "on"]),
+  ) as Record<(typeof PREFERENCE_KEYS)[number], boolean>;
+
+  // Requesters never see assignment or SLA emails; keep those as they are.
+  if (user.role === "REQUESTER") {
+    const current = await db.notificationPreference.findUnique({ where: { userId: user.id } });
+    values.emailAssigned = current?.emailAssigned ?? true;
+    values.emailSlaWarning = current?.emailSlaWarning ?? true;
+  }
+
+  await db.notificationPreference.upsert({
+    where: { userId: user.id },
+    update: values,
+    create: { userId: user.id, ...values },
+  });
+
+  revalidatePath("/profile");
+  return { success: "Email preferences saved." };
+}

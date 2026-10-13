@@ -8,13 +8,16 @@ import {
   LifeBuoy,
   LogOut,
   Menu,
+  Search,
   Ticket,
   UserCircle,
   Users,
   X,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { logoutAction } from "@/app/(auth)/actions";
+import { NotificationBell } from "@/components/shell/notification-bell";
 import { ThemeToggle } from "@/components/shell/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -24,6 +27,7 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   dashboard: LayoutDashboard,
   ticket: Ticket,
   users: Users,
+  automation: Zap,
   profile: UserCircle,
 };
 
@@ -70,9 +74,11 @@ function NavLinks({ nav, pathname }: { nav: NavItem[]; pathname: string }) {
 export function AppShell({
   user,
   nav,
+  unreadCount,
   children,
 }: {
   user: ShellUser;
+  unreadCount: number;
   nav: NavItem[];
   children: React.ReactNode;
 }) {
@@ -134,8 +140,25 @@ export function AppShell({
             <Menu className="h-4 w-4" aria-hidden="true" />
           </Button>
 
-          <div className="flex-1" />
+          {/* Global search: a GET form, so the query lands in the ticket list URL. */}
+          <form action="/tickets" method="get" role="search" className="min-w-0 flex-1">
+            <div className="relative max-w-md">
+              <Search
+                className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <input
+                type="search"
+                name="q"
+                aria-label="Search all tickets"
+                placeholder="Search tickets"
+                maxLength={100}
+                className="h-9 w-full rounded-md border border-input bg-background pl-8 pr-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+            </div>
+          </form>
 
+          <NotificationBell initialUnread={unreadCount} />
           <ThemeToggle />
 
           <Link

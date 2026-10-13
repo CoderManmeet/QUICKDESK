@@ -1,28 +1,30 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Inbox } from "lucide-react";
+import { Inbox, Plus } from "lucide-react";
 import { PriorityBadge, StatusBadge } from "@/components/ticket-badges";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { requireUser, toActor } from "@/lib/auth/session";
 import { db } from "@/lib/db";
-import { STATUS_LABEL, STATUS_ORDER } from "@/lib/labels";
-import { ticketScope } from "@/lib/permissions";
-import { formatDateTime } from "@/lib/utils";
+import { isStaff, ticketScope } from "@/lib/permissions";
+import { getDashboardCards } from "@/lib/tickets/list";
+import { cn, formatDateTime } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
 export default async function DashboardPage() {
   const user = await requireUser();
-  // Every query below is limited in SQL to tickets this user may see.
-  const scope = ticketScope(toActor(user));
+  const actor = toActor(user);
+  const staff = isStaff(actor);
 
-  const [byStatus, recent] = await Promise.all([
-    db.ticket.groupBy({ by: ["status"], where: scope, _count: { _all: true } }),
+  const [cards, recent] = await Promise.all([
+    // Each count is limited in SQL to tickets this user may see.
+    getDashboardCards(actor),
     db.ticket.findMany({
-      where: scope,
-      orderBy: { updatedAt: "desc" },
-      take: 5,
+      where: ticketScope(actor),
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      take: 6,
       select: {
         id: true,
         ticketNumber: true,
@@ -34,28 +36,46 @@ export default async function DashboardPage() {
     }),
   ]);
 
-  const counts = new Map(byStatus.map((row) => [row.status, row._count._all]));
-  const total = byStatus.reduce((sum, row) => sum + row._count._all, 0);
-
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Welcome, {user.name.split(" ")[0]}</h1>
-        <p className="text-sm text-muted-foreground">
-          {total === 1 ? "1 ticket" : `${total} tickets`} visible to you.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">Welcome, {user.name.split(" ")[0]}</h1>
+          <p className="text-sm text-muted-foreground">
+            {staff
+              ? "Here is what needs attention in your queue."
+              : "Track your support requests here."}
+          </p>
+        </div>
+        <Link href="/tickets/new" className={cn(buttonVariants({ size: "sm" }), "shrink-0")}>
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          New ticket
+        </Link>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        {STATUS_ORDER.map((status) => (
-          <Card key={status}>
-            <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">{STATUS_LABEL[status]}</p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums">
-                {counts.get(status) ?? 0}
-              </p>
-            </CardContent>
-          </Card>
+      <div
+        className={cn(
+          "grid grid-cols-2 gap-3 sm:grid-cols-3",
+          staff ? "lg:grid-cols-4 xl:grid-cols-7" : "lg:grid-cols-5",
+        )}
+      >
+        {cards.map((card) => (
+          <Link
+            key={card.key}
+            href={card.href}
+            data-card={card.key}
+            className="rounded-lg border bg-card p-4 shadow-sm transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <p className="text-xs text-muted-foreground">{card.label}</p>
+            <p
+              className={cn(
+                "mt-1 text-2xl font-semibold tabular-nums",
+                card.key === "overdue" && card.count > 0 ? "text-red-600 dark:text-red-400" : "",
+              )}
+            >
+              {card.count}
+            </p>
+          </Link>
         ))}
       </div>
 
@@ -71,7 +91,7 @@ export default async function DashboardPage() {
             <EmptyState
               icon={<Inbox className="h-8 w-8" aria-hidden="true" />}
               title="No tickets yet"
-              description="Tickets you can access will show up here."
+              description="Create a ticket to get started."
             />
           ) : (
             <ul className="divide-y">
@@ -81,7 +101,12 @@ export default async function DashboardPage() {
                   className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{ticket.subject}</p>
+                    <Link
+                      href={`/tickets/${ticket.id}`}
+                      className="block truncate text-sm font-medium hover:underline"
+                    >
+                      {ticket.subject}
+                    </Link>
                     <p className="text-xs text-muted-foreground">
                       {ticket.ticketNumber} · Updated {formatDateTime(ticket.updatedAt)}
                     </p>

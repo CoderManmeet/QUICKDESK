@@ -249,6 +249,69 @@ async function main() {
     ],
   });
 
+  // ── Automation rules ──
+  await db.automationRule.createMany({
+    data: [
+      {
+        name: "Urgent in the subject means urgent priority",
+        trigger: "TICKET_CREATED",
+        conditions: [{ field: "subject_contains", value: "urgent" }],
+        actions: [{ type: "set_priority", priority: "URGENT" }],
+        position: 0,
+      },
+      {
+        name: "Refund requests are shared out across Billing",
+        trigger: "TICKET_CREATED",
+        conditions: [{ field: "category", value: categories.refunds.id }],
+        actions: [
+          { type: "round_robin", teamId: billingTeam.id },
+          { type: "add_tag", tagId: tagRefund.id },
+        ],
+        position: 1,
+      },
+      {
+        name: "Unassigned for 2 hours: tell the team leads",
+        trigger: "TIME_ELAPSED",
+        elapsedMinutes: 120,
+        conditions: [{ field: "status", value: "OPEN" }],
+        actions: [
+          {
+            type: "notify",
+            recipient: "team_leads",
+            message: "This ticket has been open and unassigned for 2 hours.",
+          },
+        ],
+        position: 2,
+      },
+    ],
+  });
+
+  // ── Canned responses ──
+  await db.cannedResponse.createMany({
+    data: [
+      {
+        title: "Acknowledge and investigating",
+        body: "Hi {{requester_name}},\n\nThanks for getting in touch. I have picked up {{ticket_number}} and I am looking into it now. I will update you as soon as I know more.\n\n{{agent_name}}",
+        createdById: admin.id,
+      },
+      {
+        title: "Ask for more details",
+        body: "Hi {{requester_name}},\n\nTo help us look into \"{{ticket_subject}}\", could you share:\n\n1. The exact steps you took\n2. What you expected to happen\n3. A screenshot of any error message\n\nThanks,\n{{agent_name}}",
+        createdById: admin.id,
+      },
+      {
+        title: "Issue resolved",
+        body: "Hi {{requester_name}},\n\nThis should now be fixed. Please check on your side and reply to {{ticket_number}} if anything still looks wrong.\n\n{{agent_name}}",
+        createdById: admin.id,
+      },
+      {
+        title: "Refund processed",
+        body: "Hi {{requester_name}},\n\nYour refund has been processed. It usually reaches your account within 5 to 7 working days, depending on your bank.\n\n{{agent_name}}",
+        createdById: admin.id,
+      },
+    ],
+  });
+
   // ── Tickets ──
   const now = Date.now();
   const plan = buildPlan();

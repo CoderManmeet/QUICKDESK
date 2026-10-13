@@ -2,6 +2,12 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  experimental: {
+    // Ticket forms upload up to 5 files of 10 MB each through server actions.
+    // Both limits are needed: the middleware buffers request bodies too.
+    serverActions: { bodySizeLimit: "52mb" },
+    middlewareClientMaxBodySize: "52mb",
+  },
   async headers() {
     return [
       {

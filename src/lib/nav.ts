@@ -16,6 +16,9 @@ export function navFor(actor: Actor): NavItem[] {
   if (can(actor, "admin.users")) {
     items.push({ href: "/admin/users", label: "Users", icon: "users" });
   }
+  if (can(actor, "admin.automation")) {
+    items.push({ href: "/admin/automation", label: "Automation", icon: "automation" });
+  }
 
   items.push({ href: "/profile", label: "Profile", icon: "profile" });
   return items;

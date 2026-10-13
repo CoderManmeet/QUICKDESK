@@ -76,6 +76,7 @@ enum NotificationType {
   SLA_WARNING
   SLA_BREACH
   ESCALATION
+  AUTOMATION
 }
 
 // ───────────────────────── Auth & users ─────────────────────────
@@ -215,6 +216,11 @@ model Ticket {
   escalationLevel Int       @default(0)
   escalatedAt     DateTime?
 
+  // Set by the SLA job when the "about to breach" warning has been sent.
+  // Cleared when a priority change gives the ticket new targets.
+  firstResponseWarnedAt DateTime?
+  resolutionWarnedAt    DateTime?
+
   mergedIntoId String?
   mergedInto   Ticket?  @relation("TicketMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
   mergedFrom   Ticket[] @relation("TicketMerge")
@@ -230,8 +236,9 @@ model Ticket {
   attachments   Attachment[]
   tags          TicketTag[]
   events        TicketEvent[]
-  csatRatings   CsatRating[]
-  notifications Notification[]
+  csatRatings    CsatRating[]
+  notifications  Notification[]
+  automationRuns AutomationRun[]
 
   @@index([requesterId, deletedAt])
   @@index([assigneeId, status])
@@ -358,7 +365,24 @@ model AutomationRule {
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
+  runs AutomationRun[]
+
   @@index([trigger, isEnabled, position])
+}
+
+// One row each time a rule's actions ran on a ticket. Used to show activity
+// in the admin screen and so a "time elapsed" rule fires only once per
+// quiet period.
+model AutomationRun {
+  id       String         @id @default(cuid())
+  ruleId   String
+  rule     AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  ticketId String
+  ticket   Ticket         @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  firedAt  DateTime
+
+  @@index([ruleId, ticketId, firedAt])
+  @@index([ticketId])
 }
 
 model CannedResponse {

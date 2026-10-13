@@ -1,4 +1,4 @@
-export type NavIcon = "dashboard" | "ticket" | "users" | "profile";
+export type NavIcon = "dashboard" | "ticket" | "users" | "automation" | "profile";
 
 export type NavItem = {
   href: string;

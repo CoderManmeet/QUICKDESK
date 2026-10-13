@@ -27,7 +27,9 @@ export async function sendEmail(input: SendEmailInput): Promise<boolean> {
   }
 
   try {
-    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    // BREVO_API_URL only exists so tests can point at a local mock server.
+    const endpoint = process.env.BREVO_API_URL || "https://api.brevo.com/v3/smtp/email";
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "api-key": apiKey,
